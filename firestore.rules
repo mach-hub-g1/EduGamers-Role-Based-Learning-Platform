@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  // Helper functions
+  function isSignedIn() {
+    return request.auth != null;
+  }
+
+  function isUser(userId) {
+    return isSignedIn() && request.auth.uid == userId;
+  }
+
+  function isAdmin() {
+    return isSignedIn() && request.auth.token.admin == true;
+  }
+
+  function isTeacher() {
+    return isSignedIn() && request.auth.token.teacher == true;
+  }
+
+  function isStudent() {
+    return isSignedIn() && request.auth.token.student == true;
+  }
+
+  function isEnrolled(courseId) {
+    return isSignedIn() && exists(/databases/$(database)/documents/courses/$(courseId)/enrollments/$(request.auth.uid));
+  }
+
+  function isCoursePublished(courseId) {
+    return get(/databases/$(database)/documents/courses/$(courseId)).data.published == true;
+  }
+
+  match /databases/{database}/documents {
+    // User profiles
+    match /users/{userId} {
+      allow read: if isSignedIn() && (isUser(userId) || isAdmin());
+      allow create: if isUser(userId) && !exists(/databases/$(database)/documents/$(resource.path));
+      allow update, delete: if isUser(userId) || isAdmin();
+    }
+
+    // Courses collection
+    match /courses/{courseId} {
+      // Anyone can read published courses
+      allow read: if isSignedIn() && (isCoursePublished(courseId) || isAdmin() || isTeacher());
+      // Only admins can create/update/delete courses
+      allow create, update, delete: if isAdmin() || isTeacher();
+
+      // Course enrollments
+      match /enrollments/{enrollmentId} {
+        allow read: if isSignedIn() && (isUser(enrollmentId) || isAdmin() || isTeacher());
+        allow create: if isSignedIn() && (isStudent() || isAdmin()) && isCoursePublished(courseId);
+        allow update, delete: if isAdmin() || isTeacher();
+      }
+
+      // Course content
+      match /content/{contentId} {
+        allow read: if isSignedIn() && (isEnrolled(courseId) || isAdmin() || isTeacher());
+        allow write: if isAdmin() || isTeacher();
+      }
+    }
+
+    // User progress tracking
+    match /userProgress/{userId} {
+      allow read: if isUser(userId) || isAdmin();
+      allow write: if isUser(userId) || isAdmin();
+      
+      match /{document=**} {
+        allow read, write: if isUser(userId) || isAdmin();
+      }
+    }
+
+    // Quiz/Assessment submissions
+    match /submissions/{submissionId} {
+      allow read: if isSignedIn() && (isUser(submissionId.split('_')[0]) || isAdmin() || isTeacher());
+      allow create: if isSignedIn() && isStudent() && isEnrolled(request.resource.data.courseId);
+      allow update, delete: if isAdmin() || isTeacher();
+    }
+
+    // Forum/discussions
+    match /discussions/{discussionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && (isStudent() || isTeacher() || isAdmin());
+      allow update, delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin() || isTeacher());
+      
+      match /replies/{replyId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && (isStudent() || isTeacher() || isAdmin());
+        allow update, delete: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin() || isTeacher());
+      }
+    }
+  }
+}

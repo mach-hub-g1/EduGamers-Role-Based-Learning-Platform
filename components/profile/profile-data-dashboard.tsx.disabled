@@ -1,0 +1,459 @@
+"use client"
+
+import { useState, useEffect } from "react"
+import { useAuth } from "@/lib/auth-context"
+import { useLanguage } from "@/lib/language-context"
+import { userService } from "@/lib/user-service"
+import { profileStorageService, ProfileImage, ProfileActivity } from "@/lib/profile-storage"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
+import { Badge } from "@/components/ui/badge"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { useToast } from "@/hooks/use-toast"
+import {
+  Database,
+  HardDrive,
+  Image as ImageIcon,
+  Activity,
+  Download,
+  Trash2,
+  RefreshCw,
+  Shield,
+  Clock,
+  FileImage,
+  Loader2,
+  AlertTriangle
+} from "lucide-react"
+
+export function ProfileDataDashboard() {
+  const { user } = useAuth()
+  const { t } = useLanguage()
+  const { toast } = useToast()
+  
+  const [isLoading, setIsLoading] = useState(true)
+  const [profileImages, setProfileImages] = useState<ProfileImage[]>([])
+  const [activities, setActivities] = useState<ProfileActivity[]>([])
+  const [storageUsage, setStorageUsage] = useState({ totalSize: 0, imageCount: 0 })
+  const [dataIntegrity, setDataIntegrity] = useState<boolean | null>(null)
+
+  // Load data on component mount
+  useEffect(() => {
+    const loadData = async () => {
+      if (!user?.uid) return
+      
+      try {
+        setIsLoading(true)
+        
+        // Load all data in parallel
+        const [images, activities, usage, integrity] = await Promise.all([
+          profileStorageService.getUserProfileImages(user.uid),
+          profileStorageService.getProfileActivityHistory(user.uid, 20),
+          profileStorageService.getUserStorageUsage(user.uid),
+          userService.verifyProfileIntegrity(user.uid)
+        ])
+        
+        setProfileImages(images)
+        setActivities(activities)
+        setStorageUsage(usage)
+        setDataIntegrity(integrity)
+        
+      } catch (error) {
+        console.error('Error loading profile data:', error)
+        toast({
+          title: "Error",
+          description: "Failed to load profile data",
+          variant: "destructive",
+        })
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    
+    loadData()
+  }, [user?.uid])
+
+  // Create backup
+  const handleCreateBackup = async () => {
+    if (!user?.uid) return
+    
+    try {
+      const success = await userService.backupUserProfile(user.uid)
+      if (success) {
+        toast({
+          title: "Backup Created",
+          description: "Your profile has been backed up successfully",
+        })
+      } else {
+        throw new Error("Backup failed")
+      }
+    } catch (error) {
+      toast({
+        title: "Backup Failed",
+        description: "Failed to create backup. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Restore from backup
+  const handleRestoreBackup = async () => {
+    if (!user?.uid) return
+    
+    try {
+      const success = await userService.restoreUserProfile(user.uid)
+      if (success) {
+        toast({
+          title: "Profile Restored",
+          description: "Your profile has been restored from backup",
+        })
+        // Reload data
+        window.location.reload()
+      } else {
+        toast({
+          title: "No Backup Found",
+          description: "No backup data found for your profile",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Restore Failed",
+        description: "Failed to restore backup. Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Clean up old images
+  const handleCleanup = async () => {
+    if (!user?.uid) return
+    
+    try {
+      const deletedCount = await profileStorageService.cleanupOldProfilePictures(user.uid)
+      
+      toast({
+        title: "Cleanup Complete",
+        description: `Removed ${deletedCount} old profile pictures`,
+      })
+      
+      // Reload images
+      const newImages = await profileStorageService.getUserProfileImages(user.uid)
+      const newUsage = await profileStorageService.getUserStorageUsage(user.uid)
+      setProfileImages(newImages)
+      setStorageUsage(newUsage)
+      
+    } catch (error) {
+      toast({
+        title: "Cleanup Failed",
+        description: "Failed to clean up old files",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Delete all user data
+  const handleDeleteAllData = async () => {
+    if (!user?.uid) return
+    
+    const confirmed = window.confirm(
+      'Are you sure you want to delete ALL your data? This action cannot be undone and will remove:\n\n' +
+      '• All profile pictures\n' +
+      '• All activity history\n' +
+      '• All backups and snapshots\n' +
+      '• Your profile information\n\n' +
+      'Type "DELETE" to confirm'
+    )
+    
+    if (!confirmed) return
+    
+    const confirmation = window.prompt(
+      'Please type "DELETE" (in capital letters) to confirm complete data deletion:'
+    )
+    
+    if (confirmation !== 'DELETE') {
+      toast({
+        title: "Deletion Cancelled",
+        description: "Data deletion was cancelled - confirmation text did not match",
+      })
+      return
+    }
+    
+    try {
+      // Delete storage data (images, activities, snapshots)
+      const storageResult = await profileStorageService.deleteAllUserData(user.uid)
+      
+      // Delete profile and backup data
+      const profileDeleted = await userService.deleteAllUserData(user.uid)
+      
+      if (storageResult.success && profileDeleted) {
+        toast({
+          title: "All Data Deleted",
+          description: `Successfully deleted all data including ${storageResult.deletedImages} images`,
+        })
+        
+        // Reload the page after a short delay
+        setTimeout(() => {
+          window.location.reload()
+        }, 2000)
+        
+      } else {
+        throw new Error('Partial deletion occurred')
+      }
+      
+    } catch (error) {
+      toast({
+        title: "Deletion Failed",
+        description: "Failed to delete all data. Some items may remain.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Delete individual image
+  const handleDeleteImage = async (imageId: string) => {
+    if (!user?.uid) return
+    
+    const confirmed = window.confirm('Are you sure you want to delete this profile picture?')
+    if (!confirmed) return
+    
+    try {
+      const success = await profileStorageService.deleteProfileImageById(user.uid, imageId)
+      
+      if (success) {
+        toast({
+          title: "Image Deleted",
+          description: "Profile picture deleted successfully",
+        })
+        
+        // Reload images
+        const newImages = await profileStorageService.getUserProfileImages(user.uid)
+        const newUsage = await profileStorageService.getUserStorageUsage(user.uid)
+        setProfileImages(newImages)
+        setStorageUsage(newUsage)
+        
+      } else {
+        throw new Error('Delete operation failed')
+      }
+      
+    } catch (error) {
+      toast({
+        title: "Delete Failed",
+        description: "Failed to delete the profile picture",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Format file size
+  const formatFileSize = (bytes: number): string => {
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }
+
+  // Format date
+  const formatDate = (dateString: string): string => {
+    return new Date(dateString).toLocaleDateString() + ' ' + 
+           new Date(dateString).toLocaleTimeString()
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-6 max-w-6xl mx-auto p-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold">Profile Data Storage</h1>
+        <div className="flex items-center gap-2">
+          {dataIntegrity !== null && (
+            <Badge variant={dataIntegrity ? "default" : "destructive"}>
+              <Shield className="h-3 w-3 mr-1" />
+              {dataIntegrity ? "Data Intact" : "Data Issues"}
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      {/* Storage Overview */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-6 text-center">
+            <HardDrive className="h-8 w-8 mx-auto mb-2 text-blue-500" />
+            <div className="text-2xl font-bold">{formatFileSize(storageUsage.totalSize)}</div>
+            <div className="text-sm text-muted-foreground">Total Storage Used</div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-6 text-center">
+            <ImageIcon className="h-8 w-8 mx-auto mb-2 text-green-500" />
+            <div className="text-2xl font-bold">{storageUsage.imageCount}</div>
+            <div className="text-sm text-muted-foreground">Profile Images</div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-6 text-center">
+            <Activity className="h-8 w-8 mx-auto mb-2 text-purple-500" />
+            <div className="text-2xl font-bold">{activities.length}</div>
+            <div className="text-sm text-muted-foreground">Recent Activities</div>
+          </CardContent>
+        </Card>
+        
+        <Card>
+          <CardContent className="p-6 text-center">
+            <Database className="h-8 w-8 mx-auto mb-2 text-orange-500" />
+            <div className="text-2xl font-bold">Secure</div>
+            <div className="text-sm text-muted-foreground">Data Status</div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Action Buttons */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Data Management</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div className="flex flex-wrap gap-4">
+              <Button onClick={handleCreateBackup} className="gap-2">
+                <Download className="h-4 w-4" />
+                Create Backup
+              </Button>
+              <Button onClick={handleRestoreBackup} variant="outline" className="gap-2">
+                <RefreshCw className="h-4 w-4" />
+                Restore Backup
+              </Button>
+              <Button onClick={handleCleanup} variant="outline" className="gap-2">
+                <Trash2 className="h-4 w-4" />
+                Clean Up Old Files
+              </Button>
+            </div>
+            
+            {/* Danger Zone */}
+            <div className="pt-4 border-t border-destructive/20">
+              <div className="mb-3 flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-destructive" />
+                <h4 className="text-sm font-medium text-destructive">
+                  Danger Zone
+                </h4>
+              </div>
+              <div className="mb-3 p-3 bg-destructive/5 border border-destructive/20 rounded-md">
+                <p className="text-xs text-muted-foreground mb-2">
+                  ⚠️ <strong>Warning:</strong> These actions permanently delete your data and cannot be undone.
+                </p>
+                <ul className="text-xs text-muted-foreground space-y-1 ml-4">
+                  <li>• All profile pictures and images ({storageUsage.imageCount} files)</li>
+                  <li>• Complete activity history ({activities.length} activities)</li>
+                  <li>• All backups and snapshots</li>
+                  <li>• Profile information and settings</li>
+                  <li>• Total storage: {formatFileSize(storageUsage.totalSize)}</li>
+                </ul>
+              </div>
+              <Button 
+                onClick={handleDeleteAllData} 
+                variant="destructive" 
+                className="gap-2"
+                size="sm"
+              >
+                <Trash2 className="h-4 w-4" />
+                Delete All My Data
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Profile Images */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <FileImage className="h-5 w-5" />
+            Profile Images ({profileImages.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {profileImages.length > 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+              {profileImages.map((image) => (
+                <div key={image.id} className="space-y-2 relative group">
+                  <div className="relative">
+                    <Avatar className="h-20 w-20 mx-auto">
+                      <AvatarImage src={image.url} className="object-cover" />
+                      <AvatarFallback>IMG</AvatarFallback>
+                    </Avatar>
+                    <Button
+                      onClick={() => handleDeleteImage(image.id)}
+                      variant="destructive"
+                      size="sm"
+                      className="absolute -top-1 -right-1 h-6 w-6 rounded-full p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </div>
+                  <div className="text-center text-xs space-y-1">
+                    <div className="font-medium truncate">{image.fileName}</div>
+                    <div className="text-muted-foreground">{formatFileSize(image.size)}</div>
+                    <div className="text-muted-foreground">{formatDate(image.uploadDate)}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              <ImageIcon className="h-12 w-12 mx-auto mb-2 opacity-50" />
+              <p>No profile images found</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Activity Log */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Clock className="h-5 w-5" />
+            Recent Activity
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {activities.length > 0 ? (
+            <div className="space-y-3">
+              {activities.map((activity) => (
+                <div key={activity.id} className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                    <div>
+                      <div className="font-medium capitalize">
+                        {activity.action.replace(/_/g, ' ')}
+                      </div>
+                      <div className="text-sm text-muted-foreground">
+                        {formatDate(activity.timestamp)}
+                      </div>
+                    </div>
+                  </div>
+                  {activity.details && Object.keys(activity.details).length > 0 && (
+                    <Badge variant="outline">Details Available</Badge>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              <Activity className="h-12 w-12 mx-auto mb-2 opacity-50" />
+              <p>No recent activity</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
